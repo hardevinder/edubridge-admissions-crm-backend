@@ -50,6 +50,12 @@ router.get(
 );
 
 router.patch(
+    '/:id/details',
+    authorize(...followupUsers),
+    controller.updateDetails
+);
+
+router.patch(
     '/:id/assign',
     authorize(...management),
     controller.assign

@@ -434,6 +434,63 @@ exports.getOne = handle(async (req, res) => {
     });
 });
 
+// UPDATE PERSONAL DETAILS (does not change assignment or admission state)
+exports.updateDetails = handle(async (req, res) => {
+    const fields = {
+        full_name: 150, phone: 30, alternate_phone: 30,
+        email: 190, parent_name: 150, city: 100, state: 100,
+        previous_school: 200, qualification: 100
+    };
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+        !Object.keys(body).length || Object.keys(body).some(key =>
+            !Object.prototype.hasOwnProperty.call(fields, key))) {
+        fail('Invalid enquiry details');
+    }
+    function normalizePhone(value) {
+        if (!value) return null;
+        const compact = value.replace(/[\s()-]/g, '');
+        if (!/^\+?[0-9]{7,15}$/.test(compact)) fail('Invalid mobile number');
+        return /^\+91[6-9][0-9]{9}$/.test(compact) ? compact.slice(3)
+            : /^0[6-9][0-9]{9}$/.test(compact) ? compact.slice(1) : compact;
+    }
+    const result = await sequelize.transaction(async transaction => {
+        const lead = await findLead(req, transaction);
+        const changes = {};
+        for (const key of Object.keys(body)) {
+            let value = text(body[key], fields[key], ['full_name', 'phone'].includes(key));
+            if (['phone', 'alternate_phone'].includes(key)) value = normalizePhone(value);
+            if (key === 'email' && value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+                fail('Invalid email address');
+            }
+            if (value !== lead.get(key)) changes[key] = value;
+        }
+        if (!Object.keys(changes).length) return lead;
+        if (changes.phone) {
+            const phone = changes.phone;
+            const variants = /^[6-9][0-9]{9}$/.test(phone)
+                ? [phone, `+91${phone}`, `0${phone}`, `91${phone}`] : [phone];
+            const duplicate = await Lead.findOne({
+                where: { institution_id: req.institutionId,
+                    id: { [Op.ne]: lead.id }, phone: { [Op.in]: variants } },
+                attributes: ['id'], transaction
+            });
+            if (duplicate) fail('Mobile number already exists in another enquiry', 409);
+        }
+        await lead.update(changes, { transaction });
+        await LeadStatusHistory.create({
+            institution_id: req.institutionId,
+            lead_id: lead.id,
+            changed_by: req.user.id,
+            previous_status: lead.status,
+            new_status: lead.status,
+            remarks: `Enquiry details updated: ${Object.keys(changes).join(', ')}`
+        }, { transaction });
+        return lead;
+    });
+    res.json({ success: true, message: 'Enquiry details updated', data: result });
+});
+
 // ASSIGN COUNSELLOR
 exports.assign = handle(async (req, res) => {
 
