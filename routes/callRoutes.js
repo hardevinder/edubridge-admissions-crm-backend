@@ -7,4 +7,6 @@ router.use(authenticate, requireInstitution);
 router.get('/summary', authorize(...managers), controller.summary);
 router.get('/lead/:leadId', authorize(...managers, 'COUNSELLOR'), controller.list);
 router.post('/lead/:leadId', authorize(...managers, 'COUNSELLOR'), controller.create);
+router.post('/lead/:leadId/test-connect', authorize('COUNSELLOR'), controller.testConnect);
+router.post('/lead/:leadId/:callId/refresh', authorize('COUNSELLOR'), controller.refresh);
 module.exports = router;

@@ -47,7 +47,7 @@ exports.summary = wrap(async (req, res) => {
     const end = new Date();
     const start = new Date(end.getTime() - 7 * 86400000);
     const rows = await CrmCallLog.findAll({ where: { institution_id: req.institutionId,
-        called_at: { [Op.gte]: start, [Op.lte]: end } },
+        source: 'MANUAL', called_at: { [Op.gte]: start, [Op.lte]: end } },
         attributes: ['user_id', 'status', 'duration_seconds'], raw: true });
     const map = new Map();
     for (const row of rows) {
@@ -62,4 +62,48 @@ exports.summary = wrap(async (req, res) => {
     const data = [...map.values()].map(item => ({ ...item, name: names.get(item.user_id) || null,
         answer_rate: Math.round(1000 * item.answered_calls / item.total_calls) / 10 }));
     res.json({ success: true, source: 'MANUAL', from: start, to: end, data });
+});
+
+const exotel = require('../services/exotelService');
+const sequelize = require('../config/database');
+exports.testConnect = wrap(async (req, res) => {
+    if (!exotel.enabledFor(req.institutionId)) return reject(res, 403, 'Test calling disabled');
+    if (req.body?.participants_consented !== true) return reject(res, 400, 'Both test participants must agree to the call');
+    const row = await sequelize.transaction(async t => {
+        const user = await User.findOne({where:{id:req.user.id,institution_id:req.institutionId,is_active:true}, attributes:['id','phone'], transaction:t, lock:t.LOCK.UPDATE});
+        if (!user) return null;
+        const lead = await Lead.findOne({where:{...leadScope(req),id:req.params.leadId}, attributes:['id','phone'], transaction:t, lock:t.LOCK.UPDATE});
+        if (!lead) return null;
+        const from = exotel.normalize(user.phone), to = exotel.normalize(lead.phone);
+        if (!exotel.permitted(from,to)) return null;
+        const pending = await CrmCallLog.findOne({where:{institution_id:req.institutionId,user_id:user.id,source:'EXOTEL', [Op.or]:[{completed_at:null},{called_at:{[Op.gte]:new Date(Date.now()-60000)}}]},transaction:t});
+        if (pending) return null;
+        const log = await CrmCallLog.create({institution_id:req.institutionId,lead_id:lead.id,user_id:user.id,direction:'OUTBOUND',status:'INITIATED',source:'EXOTEL',called_at:new Date(),initiated_at:new Date(),recording_consent:false}, {transaction:t});
+        return {log,from,to};
+    });
+    if (!row) return reject(res, 409, 'Test participants not approved or another call is pending');
+    try {
+        const call = await exotel.connect(row.from,row.to,req.institutionId);
+        await row.log.update({exotel_call_sid:call.Sid,...exotel.map(call)});
+    } catch (_) {
+        await row.log.update({status:'UNKNOWN',failure_reason:'Provider result uncertain; reconcile in provider dashboard before retrying'});
+        return reject(res, 502, 'Provider result uncertain; do not retry until reconciled');
+    }
+    res.status(201).json({success:true,data:row.log});
+});
+exports.refresh = wrap(async (req,res) => {
+    if (!exotel.enabledFor(req.institutionId)) return reject(res,403,'Test calling disabled');
+    const lead = await accessibleLead(req);
+    if (!lead || !/^\d+$/.test(req.params.callId)) return reject(res,404,'Call not found');
+    const row = await CrmCallLog.findOne({where:{id:req.params.callId,lead_id:lead.id,institution_id:req.institutionId,user_id:req.user.id,source:'EXOTEL'}});
+    if (!row || !row.exotel_call_sid) return reject(res,404,'Call not found or requires reconciliation');
+    let call;
+    try { call = await exotel.details(row.exotel_call_sid,req.institutionId); }
+    catch (_) { return reject(res,502,'Unable to refresh provider status'); }
+    const fields = exotel.map(call);
+    if (['completed','failed','busy','no-answer'].includes(fields.provider_status)) fields.completed_at = row.completed_at || new Date();
+    // Do not overwrite terminal state with a delayed non-terminal response.
+    if (row.completed_at && !fields.completed_at) return res.json({success:true,data:row});
+    await row.update(fields);
+    res.json({success:true,data:row});
 });
