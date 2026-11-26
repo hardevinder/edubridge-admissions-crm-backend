@@ -1,0 +1,10 @@
+const express = require('express');
+const { authenticate, authorize, requireInstitution } = require('../middleware/auth');
+const controller = require('../controllers/callController');
+const router = express.Router();
+const managers = ['DIRECTOR', 'ADMISSION_HEAD'];
+router.use(authenticate, requireInstitution);
+router.get('/summary', authorize(...managers), controller.summary);
+router.get('/lead/:leadId', authorize(...managers, 'COUNSELLOR'), controller.list);
+router.post('/lead/:leadId', authorize(...managers, 'COUNSELLOR'), controller.create);
+module.exports = router;

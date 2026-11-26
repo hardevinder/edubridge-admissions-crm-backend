@@ -46,6 +46,7 @@ app.get('/api/health', async (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/leads', require('./routes/leadRoutes'));
+app.use('/api/calls', require('./routes/callRoutes'));
 app.use('/api/email', require('./routes/emailRoutes'));
 app.use('/api/masters', require('./routes/masterRoutes'));
 app.use('/api/dashboard', require('./routes/dashboardRoutes'));
