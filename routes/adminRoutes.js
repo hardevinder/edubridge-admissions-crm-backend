@@ -33,6 +33,7 @@ router.get('/roles', controller.roles);
 
 router.get('/users', controller.users);
 router.post('/users', controller.createUser);
+router.put('/users/:id', controller.updateUser);
 
 router.patch(
     '/users/:id/status',

@@ -475,3 +475,42 @@ exports.userStatus = handle(async (req, res) => {
         message: 'User status updated'
     });
 });
+
+// UPDATE INSTITUTION USER
+exports.updateUser = handle(async (req, res) => {
+    const body = req.body || {};
+    const user = await User.findByPk(req.params.id, {
+        include: [{ model: Role, as: 'role' }]
+    });
+    if (!user) fail('User not found', 404);
+    if (Number(user.id) === Number(req.user.id) || !user.role || user.role.code === 'SUPER_ADMIN') {
+        fail('Administrator account cannot be changed here', 403);
+    }
+    if (String(body.institution_id) !== String(user.institution_id)) {
+        fail('Institution transfer is not supported');
+    }
+    const role = await Role.findByPk(body.role_id);
+    if (!role || role.code === 'SUPER_ADMIN') fail('Invalid institution role');
+    const branch = await Branch.findOne({ where: {
+        id: body.branch_id, institution_id: user.institution_id
+    }});
+    if (!branch || (!branch.is_active && Number(branch.id) !== Number(user.branch_id))) {
+        fail('Invalid campus');
+    }
+    const updates = {
+        name: clean(body.name, 150, true),
+        email: clean(body.email, 190, true).toLowerCase(),
+        phone: clean(body.phone, 30),
+        branch_id: branch.id,
+        role_id: role.id
+    };
+    if (body.password !== undefined && body.password !== '') {
+        const password = body.password;
+        if (typeof password !== 'string' || password.length < 12 || Buffer.byteLength(password, 'utf8') > 72) {
+            fail('Password must contain 12–72 bytes');
+        }
+        updates.password_hash = await bcrypt.hash(password, 12);
+    }
+    await user.update(updates);
+    res.json({ success: true, message: 'User account updated' });
+});
