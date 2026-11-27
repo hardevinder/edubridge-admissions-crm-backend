@@ -17,12 +17,15 @@ async function request(path, params) {
     if (!['https://api.exotel.com', 'https://api.in.exotel.com'].includes(base) || !/^[\w-]+$/.test(sid || '') || !key || !token) throw new Error('Invalid provider configuration');
     const response = await fetch(`${base}/v1/Accounts/${sid}${path}`, {
         method: params ? 'POST' : 'GET', redirect: 'error', signal: AbortSignal.timeout(15000),
-        headers: { Authorization: 'Basic ' + Buffer.from(`${key}:${token}`).toString('base64'), ...(params ? {'Content-Type':'application/x-www-form-urlencoded'} : {}) },
+        headers: { Accept: 'application/json', Authorization: 'Basic ' + Buffer.from(`${key}:${token}`).toString('base64'), ...(params ? {'Content-Type':'application/x-www-form-urlencoded'} : {}) },
         ...(params ? {body: new URLSearchParams(params)} : {})
     });
     if (!response.ok) throw new Error('Provider HTTP ' + response.status);
-    const data = await response.json();
-    if (!data.Call || !/^[a-zA-Z0-9_-]{1,100}$/.test(data.Call.Sid || '') || String(data.Call.AccountSid) !== sid) throw new Error('Unexpected provider response');
+    let data;
+    try { data = await response.json(); } catch { throw new Error('Provider response is not JSON'); }
+    if (!data?.Call) throw new Error('Provider response missing Call');
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(data.Call.Sid || '')) throw new Error('Provider response invalid SID');
+    if (String(data.Call.AccountSid) !== sid) throw new Error('Provider account mismatch');
     return data.Call;
 }
 exports.normalize = normalize;
@@ -32,7 +35,7 @@ exports.connect = (from, to, institutionId) => {
     if (!enabledFor(institutionId) || !permitted(from, to)) throw new Error('Test calling not permitted');
     const caller = process.env.EXOTEL_CALLER_ID;
     if (!/^\+?\d{10,13}$/.test(caller || '')) throw new Error('Invalid caller ID');
-    return request('/Calls/connect', {From:from, To:to, CallerId:caller, Record:'false', TimeLimit:'120', TimeOut:'25'});
+    return request('/Calls/connect.json', {From:from, To:to, CallerId:caller, Record:'false', TimeLimit:'120', TimeOut:'25'});
 };
 exports.details = async (sid, institutionId) => {
     if (!enabledFor(institutionId) || !/^[a-zA-Z0-9_-]{1,100}$/.test(sid || '')) throw new Error('Test refresh not permitted');
@@ -51,4 +54,12 @@ exports.map = call => {
         status = seconds > 0 ? 'ANSWERED' : ({busy:'BUSY','no-answer':'NO_ANSWER',failed:'FAILED'}[leg] || 'UNKNOWN');
     }
     return {provider_status:p || null, status, duration_seconds:status === 'ANSWERED' ? seconds : 0};
+};
+
+exports.safeError = error => {
+    const message = error?.message || '';
+    if (/^Provider HTTP [1-5]\d{2}$/.test(message)) return message;
+    if (['Provider response is not JSON','Provider response missing Call','Provider response invalid SID','Provider account mismatch','Provider SID mismatch','Invalid provider configuration','Invalid caller ID','Test calling not permitted','Test refresh not permitted'].includes(message)) return message;
+    if (error?.name === 'TimeoutError' || error?.name === 'AbortError') return 'Provider request timeout';
+    return 'Provider or persistence error';
 };

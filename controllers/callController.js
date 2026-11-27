@@ -84,9 +84,15 @@ exports.testConnect = wrap(async (req, res) => {
     if (!row) return reject(res, 409, 'Test participants not approved or another call is pending');
     try {
         const call = await exotel.connect(row.from,row.to,req.institutionId);
-        await row.log.update({exotel_call_sid:call.Sid,...exotel.map(call)});
-    } catch (_) {
-        await row.log.update({status:'UNKNOWN',failure_reason:'Provider result uncertain; reconcile in provider dashboard before retrying'});
+        // Persist the verified SID before mapping status so a mapping failure is recoverable.
+        await row.log.update({exotel_call_sid:call.Sid});
+        const fields = exotel.map(call);
+        if (['failed','busy','no-answer'].includes(fields.provider_status) || (fields.provider_status === 'completed' && fields.status !== 'UNKNOWN')) fields.completed_at = new Date();
+        await row.log.update(fields);
+    } catch (error) {
+        const reason = exotel.safeError(error);
+        console.warn('[exotel] connect log=%d: %s', row.log.id, reason);
+        await row.log.update({status:'UNKNOWN',failure_reason:reason + '; reconcile in provider dashboard before retrying'});
         return reject(res, 502, 'Provider result uncertain; do not retry until reconciled');
     }
     res.status(201).json({success:true,data:row.log});
@@ -99,9 +105,15 @@ exports.refresh = wrap(async (req,res) => {
     if (!row || !row.exotel_call_sid) return reject(res,404,'Call not found or requires reconciliation');
     let call;
     try { call = await exotel.details(row.exotel_call_sid,req.institutionId); }
-    catch (_) { return reject(res,502,'Unable to refresh provider status'); }
+    catch (error) {
+        console.warn('[exotel] refresh log=%d: %s', row.id, exotel.safeError(error));
+        return reject(res,502,'Unable to refresh provider status');
+    }
     const fields = exotel.map(call);
-    if (['completed','failed','busy','no-answer'].includes(fields.provider_status)) fields.completed_at = row.completed_at || new Date();
+    if (['failed','busy','no-answer'].includes(fields.provider_status) || (fields.provider_status === 'completed' && fields.status !== 'UNKNOWN')) {
+        fields.completed_at = row.completed_at || new Date();
+        fields.failure_reason = null;
+    }
     // Do not overwrite terminal state with a delayed non-terminal response.
     if (row.completed_at && !fields.completed_at) return res.json({success:true,data:row});
     await row.update(fields);
